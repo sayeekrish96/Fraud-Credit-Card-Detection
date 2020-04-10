@@ -1,0 +1,317 @@
+#### Load the Data
+data=read.csv("projectdataF18.csv")
+#### Take a look at the structure of the data
+str(data)
+#### Remove Duplicate Observations
+data=unique(data)
+####Take a look at the first 6 observations.
+head(data)
+ggplot(data=data, aes(data$X8)) + geom_histogram()
+####All the features, apart from "time" and "amount" are normalized.
+####Let's see whether there is any missing data.
+apply(data, 2, function(x) sum(is.na(x)))
+#### There are no NA values in the data
+
+#### Take a look at all the transactions according to variable Fake
+#### Load the essential packages
+library(ggplot2)
+library(dplyr)
+#### Convert the response variable to factor variable 
+data$Fake=as.factor(data$Fake)
+#### Create new data frame
+data.df <- data %>% group_by(Fake) %>% summarize(Fake_count = n())
+#### Add new variable
+data.df$Fake_count <- 100 * data.df$Fake_count/nrow(data)
+data.df$ncount_p <- paste(round(data.df$Fake_count,2),"%")
+ggplot(data.df,aes(x=Fake,y=Fake_count,fill=Fake)) +
+  geom_bar(stat="identity") + geom_text(aes(label=ncount_p),vjust = 2) +
+  ggtitle("Transaction Category") + xlab("Fake") + ylab("Percentage of transaction")
+
+#### Only 0.13% fake transactions - Highly Imbalanced Data
+#### Lets build a randomForest model for getting sense of important variables and benchmark accuracy
+#### First, we need to split the data
+library(caTools)
+split=sample.split(data$Fake,SplitRatio = 0.7)
+train=subset(data,split==TRUE)
+test=subset(data,split==FALSE)
+library(randomForest)
+RFModel=randomForest(Fake~.,data=train)
+#### Make Predictions Using testing data
+RFpredictions=predict(RFModel,newdata=test)
+#### Take a look at the accuracy
+table(test$Fake,round(RFpredictions))
+(26859+32)/nrow(test)
+#### 0.9998885
+#### Take a look at the top 10 important variables for our model
+options(repr.plot.width=8, repr.plot.height=15)
+varImpPlot(RFModel,
+           sort = T,
+           n.var=10,
+           main="Top 10 Most Important Variables")
+
+
+#### Now we need to balance our data
+#### There are quite a few techniques to do this
+#### First we will build the CART model and test the accuracy of this model by using different balancing techniques
+treeimb <- rpart(Fake ~ ., data = train,method = "class")
+#### Make predictions using the test data set
+pred.treeimb <- predict(treeimb, newdata = test,type = "class")
+#### Load the essential packages to evaluate  the accuracy measure
+library(ROSE)
+roc.curve(test$Fake, pred.treeimb, plotit = F)
+#### Area under the curve (AUC): 0.900
+#### Now we will apply the different balancing techniques
+
+#1.over sampling
+##Check the distribution of fake and valid transactions in response variable
+table(train$Fake)
+### perform balancing
+data_balanced_over <- ovun.sample(Fake ~ ., data = train, method = "over",N = 125342)$data
+### Check if the dataset is balanced
+table(data_balanced_over$Fake)
+
+#2.undersampling
+##Check the distribution of fake and valid transactions in response variable
+table(train$Fake)
+###Perform balancing
+data_balanced_under <- ovun.sample(Fake ~ ., data = train, method = "under", N = 160, seed = 1)$data
+### Check if the data is balanced
+table(data_balanced_under$Fake)
+
+
+##3 Undersampling + Oversampling using ROSE package
+data_balanced_both <- ovun.sample(Fake ~ ., data = train, method = "both", p=0.5, N=1000, seed = 1)$data
+### Check if the data is balanced
+table(data_balanced_both$Fake)
+#4.SMOTE undersampling
+### Load essential packages
+library(DMwR)
+data.smote=SMOTE(Fake~.,data = train,perc.over = 100,perc.under = 200)
+### Check if the data is balanced
+table(data.smote$Fake)
+#5.synthetically data creating using ROSE
+data.rose <- ROSE(Fake ~ ., data = train, seed = 1)$data
+### Check if the data is balanced
+table(data.rose$Fake)
+#6.SMOTE oversampling
+data.smote.over=SMOTE(Fake~.,data = train,perc.over = 38550,perc.under = 103.480)
+### Check if the data is balanced
+table(data.smote.over$Fake)
+#### Now as we have performed different balancing techniques, we need to identify which technique is perfect for our dataset
+#### We will determine this by building models on the balanced data and then we will tae into account area under the curve in each model.
+
+####build decision tree models
+tree.over <- rpart(Fake ~ ., data = data_balanced_over,method = "class")
+tree.under <- rpart(Fake ~ ., data = data_balanced_under,method = "class")
+tree.both <- rpart(Fake ~ ., data = data_balanced_both,method = "class")
+tree.smote = rpart(Fake~.,data = data.smote,method = "class")
+tree.rose <- rpart(Fake ~ ., data = data.rose,method = "class")
+tree.smote.over = rpart(Fake~.,data = data.smote.over,method = "class")
+####make predictions on unseen data
+pred.tree.over <- predict(tree.over, newdata = test)
+pred.tree.under <- predict(tree.under, newdata = test)
+pred.tree.both <- predict(tree.both, newdata = test)
+pred.tree.smote = predict(tree.smote,newdata = test)
+pred.tree.rose <- predict(tree.rose, newdata = test)
+pred.tree.smote.over = predict(tree.smote.over,newdata=test)
+### Now we will calcualte the AUC value of these 5 model
+#1
+roc.curve(test$Fake, pred.tree.over[,2])
+###Area under the curve (AUC): 0.897
+#2
+roc.curve(test$Fake,pred.tree.under[,2])
+##Area under the curve (AUC): 0.911
+#3.
+roc.curve(test$Fake, pred.tree.both[,2])
+###Area under the curve (AUC): 0.845
+#4
+roc.curve(test$Fake,pred.tree.smote[,2])
+###Area under the curve (AUC): 0.914
+#5 
+roc.curve(test$Fake, pred.tree.rose[,2])
+# Area under the curve (AUC): 0.963
+#6.
+roc.curve(test$Fake,pred.tree.smote.over[,2])
+##Area under the curve (AUC): 0.945
+
+###In order to use the maximum data available, we have decided to implement the SMOTE balancing technqiue 
+### Perform the coorelation analysis
+###Load the essential packages
+library(corrplot)
+data$Fake <- as.numeric(data$Fake)
+corr_plot <- corrplot(cor(data), method = "circle", type = "upper")
+### Now we need to remove the highly coorelated vairables
+###Lets create the new data frame
+df2=cor(data)
+###load the essential packages
+library(caret)
+hc=findCorrelation(df2,cutoff = 0.25)
+hc=sort(hc)
+#### Remove highly coorelated variables using cutoff = 0.75
+data=data[,-c(hc)]
+#### Take a look at the structure of the data again
+str(data)
+#### Reomved 4 variables including Amount, X9 , X12 and X14
+### Now in order to reduce the data size, we need to perform the principal component analysis.
+#### Remove the response variable
+data_noresponse=data[,1:26]
+data_noresponse$Time=NULL
+str(data_noresponse)
+#### Normalizing the Data
+PCA=prcomp(data_noresponse,scale. = T)
+names(PCA)
+#### Calculate the standard deviation
+stdev=PCA$sdev
+#### Calculate the variance
+var=stdev^2
+#### Calculate the proportion of variance explained
+prop_varex=var/sum(var)
+
+plot(cumsum(prop_varex),xlab="Principal component",ylab="Cumulative proportion of variance explained",type="b")
+#### Creat new data frame by including Principal Components
+newdata=data.frame(Fake=data$Fake,PCA$x)
+#### Take a look at the first 6 rows 
+head(newdata)
+#### As we are considering 90% of variance explained, we will consider only 23 principal components
+newdata=newdata[,1:24]
+#### Take a look at the first 6 rows again
+head(newdata)
+#### Now we have removed highly correlated variables and reduced the dimensions of the data using PCA.
+
+#### Lets split the new data obtained after performing PCA
+split=sample.split(newdata$Fake,SplitRatio = 0.7)
+train=subset(newdata,split==TRUE)
+test=subset(newdata,split==FALSE)
+#### Run the logistic regression model
+#### Check the imbalance again
+table(train$Fake)
+### highly imbalanced data
+### we need to balance the data according to our previous method
+train$Fake=as.factor(train$Fake)
+train_balanced=SMOTE(Fake~.,data = train,perc.over = 38550,perc.under = 103.480)
+### Check if the data is balanced
+table(train_balanced$Fake)
+###looks balanced
+str(train_balanced)
+###Now we will apply the basic models on our data set and check the accuracy
+### Run logistic regression
+logit=glm(Fake~.,data = train_balanced,family = binomial)
+### make predictions using the testing data
+predictlogit=predict(logit,newdata=test,type="response")
+### Check the accuracy using threshold 0.5
+table(test$Fake,predictlogit>0.5)
+(25886+33)/nrow(test)
+#### 0.9637
+### Run the decision tree model
+### load the essential libraries
+library(rpart)
+CARTmodel=rpart(Fake~.,data = train_balanced,method = "class")
+###Make predictions on testinG data
+CARTpredict=predict(CARTmodel,newdata=test,type="class")
+### Check the accuracy
+table(test$Fake,CARTpredict)
+(25119+26)/nrow(test)
+### Accuracy 93.49 %
+
+### Run the Random Forest Model
+###Load the essential libraries
+library(randomForest)
+RFmodel=randomForest(Fake~.,data = train_balanced)
+### make predictions on testing data
+predictRF=predict(RFmodel,newdata=test)
+### Check the accuracy
+table(test$Fake,predictRF)
+(26845+23)/nrow(test)
+### Accuracy 99.90%
+## Now to increase the accuracy we need to perform clustering
+### Assign newdatasets 
+limitedtrain=train_balanced
+limitedtest=test
+#### Remove the response variable before doing clustering
+limitedtrain$Fake=NULL
+limitedtest$Fake=NULL
+#### Load essential packages
+library(caret)
+###Normalize the data before clustering
+preproc = preProcess(limitedtrain)
+normTrain = predict(preproc, limitedtrain)
+normTest = predict(preproc, limitedtest)
+#### Kmeans clustering
+set.seed(123)
+k=3
+km = kmeans(normTrain, centers = k)
+library(flexclust)
+km.kcca = as.kcca(km, normTrain)
+clusterTrain = predict(km.kcca)
+clusterTest = predict(km.kcca, newdata=normTest)
+### Assign points to clusters
+test1=subset(test,clusterTest==1)
+test2=subset(test,clusterTest==2)
+test3=subset(test,clusterTest==3)
+train1=subset(train_balanced,clusterTrain==1)
+train2=subset(train_balanced,clusterTrain==2)
+train3=subset(train_balanced,clusterTrain==3)
+## Check how many points are assigned to every cluster
+table(clusterTrain)
+table(clusterTest)
+str(train1)
+#### Find centroids of every cluster
+centroids=km$centers
+centroids
+#### Convert them into excel file
+write.csv(centroids,"centroidfinal3.csv")
+
+### import the file with M value
+Mdata=read.csv("projectdataF18+validation.csv")
+### TAKE A LOOK at the structure
+str(Mdata)
+### Remove the distance and other automatically generated columns
+Mdata$C1=NULL
+Mdata$C2=NULL
+Mdata$C3=NULL
+Mdata$X=NULL
+Mdata$X.1=NULL
+
+
+### Make validation subsets
+val1=subset(Mdata,M==1)
+val2=subset(Mdata,M==2)
+val3=subset(Mdata,M==3)
+
+### Remove extra variables
+train1$PC23=NULL
+train2$PC23=NULL
+train3$PC23=NULL
+### Build Models using training clusters
+Model1=randomForest(Fake~.,data = train1)
+Model2=randomForest(Fake~.,data=train2)
+Model3=randomForest(Fake~.,data = train3)
+
+### make predicitons using validation subsets
+
+predict1=predict(Model1,newdata=val1)
+predict2=predict(Model2,newdata=val2)
+predict3=predict(Model3,newdata=val3)
+
+
+### analyse results
+table(predict1)
+table(predict2)
+table(predict3)
+## now we need to balance the train2 cluster to get better accuracy
+
+train2_balanced= SMOTE(Fake~.,data = train2,perc.over = 30,perc.under = 60)
+
+###Check if the data is balanced
+table(train2_balanced$Fake)
+### RUn the model again
+Model2=randomForest(Fake~.,data=train2_balanced)
+#### Make the predictions again
+predict2=predict(Model2,newdata=val2)
+
+table(predict2)
+
+Allpredictions=c(predict1,predict2,predict3)
+##### FInal Predictions
+### Number of 0s = 9807 and 1s = 14
+table(Allpredictions)
